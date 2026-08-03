@@ -1,0 +1,12 @@
+{
+  "name": "bxios-monorepo",
+  "private": true,
+  "scripts": {
+    "build": "pnpm --filter \"@bxios/*\" build",
+    "test": "pnpm --filter \"@bxios/*\" test"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}
