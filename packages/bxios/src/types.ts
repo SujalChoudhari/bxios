@@ -47,3 +47,40 @@ export interface ConnectionManagerOptions {
   pingPayload?: Uint8Array | string | (() => Uint8Array | string);
 }
 
+export interface AxiosRequestConfig<D = any> {
+  url?: string;
+  method?: string;
+  baseURL?: string;
+  headers?: Record<string, string>;
+  params?: Record<string, any>;
+  data?: D;
+  timeout?: number;
+  signal?: AbortSignal;
+  adapter?: (config: AxiosRequestConfig<D>) => Promise<AxiosResponse<any, D>>;
+  [key: string]: any;
+}
+
+export interface AxiosResponse<T = any, D = any> {
+  data: T;
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  config: AxiosRequestConfig<D>;
+  request?: any;
+}
+
+export type InterceptorFulfilled<T> = (value: T) => T | Promise<T>;
+export type InterceptorRejected = (error: any) => any;
+
+export interface InterceptorOptions {
+  synchronous?: boolean;
+  runWhen?: (config: AxiosRequestConfig) => boolean;
+}
+
+export interface InterceptorHandler<T> {
+  fulfilled: InterceptorFulfilled<T>;
+  rejected?: InterceptorRejected;
+  synchronous?: boolean;
+  runWhen?: (config: AxiosRequestConfig) => boolean;
+}
+
