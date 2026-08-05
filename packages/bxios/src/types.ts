@@ -21,3 +21,29 @@ export interface AxiosLikeError extends Error {
   isAxiosError: boolean;
   statusCode: number;
 }
+
+export type ConnectionState = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'RECONNECTING';
+
+export interface ConnectionManagerOptions {
+  /** The WebSocket URL to connect to. */
+  url?: string;
+  /** Custom WebSocket implementation constructor (e.g. Node `ws`). Defaults to `globalThis.WebSocket`. */
+  webSocketImpl?: any;
+  /** WebSocket subprotocols */
+  protocols?: string | string[];
+  /** Enable automatic exponential backoff reconnection. Default: true */
+  autoReconnect?: boolean;
+  /** Minimum reconnect delay in ms. Default: 1000 (1s) */
+  minReconnectDelay?: number;
+  /** Maximum reconnect delay in ms. Default: 30000 (30s) */
+  maxReconnectDelay?: number;
+  /** Reconnect delay multiplier factor. Default: 2 */
+  reconnectFactor?: number;
+  /** Heartbeat ping interval in ms. Default: 30000 (30s) */
+  pingInterval?: number;
+  /** Heartbeat timeout waiting for pong response in ms. Default: 5000 */
+  pingTimeout?: number;
+  /** Custom ping payload (or payload generator) to send on ping. Default: Uint8Array([0x9]) */
+  pingPayload?: Uint8Array | string | (() => Uint8Array | string);
+}
+
