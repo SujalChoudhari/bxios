@@ -1,9 +1,17 @@
+import {
+  ValidationError,
+  HttpError,
+  formatZodIssues,
+  createErrorTupleFrame
+} from './validation.js';
+
 export type ParamType = 'body' | 'query' | 'param' | 'headers' | 'context';
 
 export interface ParamMetadata {
   index: number;
   type: ParamType;
   key?: string;
+  schema?: any;
 }
 
 export interface MethodRouteMetadata {
@@ -99,10 +107,21 @@ export function Patch(path: string = ''): MethodDecorator {
 }
 
 /**
- * Parameter decorator factory
+ * Parameter decorator factory supporting key and/or Zod schema
  */
 export function createParamDecorator(type: ParamType) {
-  return (key?: string): ParameterDecorator => {
+  return (keyOrSchema?: string | any, schema?: any): ParameterDecorator => {
+    let key: string | undefined;
+    let paramSchema: any;
+
+    if (typeof keyOrSchema === 'string') {
+      key = keyOrSchema;
+      paramSchema = schema;
+    } else if (keyOrSchema !== undefined && keyOrSchema !== null) {
+      key = undefined;
+      paramSchema = keyOrSchema;
+    }
+
     return (target: any, propertyKey: string | symbol | undefined, parameterIndex: number) => {
       if (!propertyKey) return;
       if (!target[PARAM_METADATA_KEY]) {
@@ -115,7 +134,8 @@ export function createParamDecorator(type: ParamType) {
       paramMap.get(propertyKey)!.push({
         index: parameterIndex,
         type,
-        key
+        key,
+        schema: paramSchema
       });
     };
   };
@@ -176,34 +196,70 @@ export function pathToRegex(pathPattern: string): { regex: RegExp; paramNames: s
 }
 
 /**
- * Extract parameter value from request context
+ * Extract parameter value from request context and apply Zod schema validation if attached
  */
 function extractParamValue(pm: ParamMetadata, req: RequestContext): any {
+  let val: any;
   switch (pm.type) {
     case 'body':
-      return pm.key ? req.body?.[pm.key] : req.body;
+      val = pm.key ? req.body?.[pm.key] : req.body;
+      break;
     case 'query':
-      return pm.key ? req.query?.[pm.key] : req.query;
+      val = pm.key ? req.query?.[pm.key] : req.query;
+      break;
     case 'param':
-      return pm.key ? req.params?.[pm.key] : req.params;
+      val = pm.key ? req.params?.[pm.key] : req.params;
+      break;
     case 'headers':
       if (pm.key) {
-        if (!req.headers) return undefined;
-        const targetKey = pm.key.toLowerCase();
-        for (const [k, v] of Object.entries(req.headers)) {
-          if (k.toLowerCase() === targetKey) return v;
+        if (!req.headers) {
+          val = undefined;
+        } else {
+          const targetKey = pm.key.toLowerCase();
+          for (const [k, v] of Object.entries(req.headers)) {
+            if (k.toLowerCase() === targetKey) {
+              val = v;
+              break;
+            }
+          }
         }
-        return undefined;
+      } else {
+        val = req.headers;
       }
-      return req.headers;
+      break;
     case 'context':
       if (pm.key) {
-        return req.context?.[pm.key] ?? req[pm.key];
+        val = req.context?.[pm.key] ?? req[pm.key];
+      } else {
+        val = req.context !== undefined ? req.context : req;
       }
-      return req.context !== undefined ? req.context : req;
+      break;
     default:
-      return undefined;
+      val = undefined;
   }
+
+  if (pm.schema) {
+    if (typeof pm.schema.safeParse === 'function') {
+      const parseRes = pm.schema.safeParse(val);
+      if (!parseRes.success) {
+        const details = formatZodIssues(parseRes.error.issues);
+        throw new ValidationError('Validation failed', details);
+      }
+      return parseRes.data;
+    } else if (typeof pm.schema.parse === 'function') {
+      try {
+        return pm.schema.parse(val);
+      } catch (err: any) {
+        if (err && Array.isArray(err.issues)) {
+          const details = formatZodIssues(err.issues);
+          throw new ValidationError('Validation failed', details);
+        }
+        throw new ValidationError(err?.message || 'Validation failed');
+      }
+    }
+  }
+
+  return val;
 }
 
 /**
@@ -327,42 +383,66 @@ export class RouteRegistry {
       throw new Error(`Route not found: ${upperMethod} ${cleanPath}`);
     }
 
-    // Merge extracted path params into request context
-    const mergedReq: RequestContext = {
-      ...req,
-      method: upperMethod,
-      path: cleanPath,
-      params: { ...routeMatch.params, ...(req.params || {}) }
-    };
+    try {
+      // Merge extracted path params into request context
+      const mergedReq: RequestContext = {
+        ...req,
+        method: upperMethod,
+        path: cleanPath,
+        params: { ...routeMatch.params, ...(req.params || {}) }
+      };
 
-    // Extract query string if url provided and query not fully set
-    const rawUrl = req.url || path;
-    if (rawUrl.includes('?')) {
-      const queryString = rawUrl.split('?')[1];
-      if (queryString) {
-        const urlQueryParams: Record<string, string> = {};
-        const searchParams = new URLSearchParams(queryString);
-        searchParams.forEach((val, key) => {
-          urlQueryParams[key] = val;
-        });
-        mergedReq.query = { ...urlQueryParams, ...(req.query || {}) };
+      // Extract query string if url provided and query not fully set
+      const rawUrl = req.url || path;
+      if (rawUrl.includes('?')) {
+        const queryString = rawUrl.split('?')[1];
+        if (queryString) {
+          const urlQueryParams: Record<string, string> = {};
+          const searchParams = new URLSearchParams(queryString);
+          searchParams.forEach((val, key) => {
+            urlQueryParams[key] = val;
+          });
+          mergedReq.query = { ...urlQueryParams, ...(req.query || {}) };
+        }
       }
-    }
 
-    const { paramMetadata, handler, instance } = routeMatch.route;
-    let args: any[];
+      const { paramMetadata, handler, instance } = routeMatch.route;
+      let args: any[];
 
-    if (paramMetadata && paramMetadata.length > 0) {
-      const maxIndex = Math.max(...paramMetadata.map((p) => p.index));
-      args = new Array(maxIndex + 1);
-      for (const pm of paramMetadata) {
-        args[pm.index] = extractParamValue(pm, mergedReq);
+      if (paramMetadata && paramMetadata.length > 0) {
+        const maxIndex = Math.max(...paramMetadata.map((p) => p.index));
+        args = new Array(maxIndex + 1);
+        for (const pm of paramMetadata) {
+          args[pm.index] = extractParamValue(pm, mergedReq);
+        }
+      } else {
+        args = [mergedReq];
       }
-    } else {
-      args = [mergedReq];
-    }
 
-    return await handler.apply(instance, args);
+      return await handler.apply(instance, args);
+    } catch (err: any) {
+      const reqId = req.id || req.frameId || req.requestId;
+      const reqMeta = req.metadata || req.headers;
+
+      if (err instanceof ValidationError) {
+        return createErrorTupleFrame(400, err.message, err.details, reqId, reqMeta);
+      }
+
+      if (err && (err.name === 'ZodError' || Array.isArray(err.issues))) {
+        const details = formatZodIssues(err.issues || []);
+        return createErrorTupleFrame(400, 'Validation failed', details, reqId, reqMeta);
+      }
+
+      if (err instanceof HttpError) {
+        return createErrorTupleFrame(err.statusCode, err.message, err.details, reqId, reqMeta);
+      }
+
+      const code = typeof err?.statusCode === 'number' ? err.statusCode : typeof err?.status === 'number' ? err.status : 500;
+      const message = err?.message || 'Internal Server Error';
+      const details = Array.isArray(err?.details) ? err.details : undefined;
+
+      return createErrorTupleFrame(code, message, details, reqId, reqMeta);
+    }
   }
 
   /**
