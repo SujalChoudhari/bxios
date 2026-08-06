@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@bxios/wire": "workspace:*",
-    "ws": "^8.16.0"
+    "ws": "^8.16.0",
+    "zod": "^4.4.3"
   },
   "optionalDependencies": {
     "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.48.0"
