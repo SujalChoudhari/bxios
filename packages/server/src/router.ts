@@ -4,6 +4,7 @@ import {
   formatZodIssues,
   createErrorTupleFrame
 } from './validation.js';
+import { ZodError } from 'zod';
 
 export type ParamType = 'body' | 'query' | 'param' | 'headers' | 'context';
 
@@ -266,11 +267,11 @@ async function extractParamValue(pm: ParamMetadata, req: RequestContext): Promis
       if (parseMethod) return await parseMethod(val);
     } catch (err: any) {
       if (err instanceof ValidationError) throw err;
-      if (err && Array.isArray(err.issues)) {
-        const details = formatZodIssues(err.issues);
+      if (err instanceof ZodError) {
+        const details = formatZodIssues(err.issues as Array<{ path: (string | number)[]; message: string; code: string }>);
         throw new ValidationError('Validation failed', details);
       }
-      throw new ValidationError(err?.message || 'Validation failed');
+      throw err;
     }
   }
 
@@ -443,8 +444,8 @@ export class RouteRegistry {
         return createErrorTupleFrame(400, err.message, err.details, reqId, reqMeta);
       }
 
-      if (err && (err.name === 'ZodError' || Array.isArray(err.issues))) {
-        const details = formatZodIssues(err.issues || []);
+      if (err instanceof ZodError) {
+        const details = formatZodIssues(err.issues as Array<{ path: (string | number)[]; message: string; code: string }>);
         return createErrorTupleFrame(400, 'Validation failed', details, reqId, reqMeta);
       }
 
