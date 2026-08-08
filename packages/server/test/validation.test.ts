@@ -35,6 +35,8 @@ describe('Zod Validation & Error Handler Middleware', () => {
     id: z.string().uuid('ID must be a valid UUID')
   });
 
+  const AsyncSchema = z.string().refine(async (value) => value === 'allowed', 'Value is not allowed');
+
   @Controller('/api/v1')
   class TestController {
     @Post('/users')
@@ -65,6 +67,11 @@ describe('Zod Validation & Error Handler Middleware', () => {
     @Get('/secure')
     secureRoute(@Headers('x-api-key', z.string().min(10, 'API key too short')) apiKey: string) {
       return { success: true, apiKey };
+    }
+
+    @Post('/async-validation')
+    asyncValidation(@Body(AsyncSchema) value: string) {
+      return { success: true, value };
     }
 
     @Get('/sync-fail')
@@ -213,6 +220,18 @@ describe('Zod Validation & Error Handler Middleware', () => {
       expect(isErrorTupleFrame(res)).toBe(true);
       expect(res.code).toBe(400);
       expect(res.payload.details?.[0].message).toContain('API key too short');
+    });
+
+    it('returns 400 tuple frame when an async Zod refinement fails', async () => {
+      const res = await registry.dispatch('POST', '/api/v1/async-validation', {
+        id: 'req-400-async',
+        body: 'rejected'
+      });
+
+      expect(isErrorTupleFrame(res)).toBe(true);
+      expect(res.code).toBe(400);
+      expect(res.id).toBe('req-400-async');
+      expect(res.payload.details?.[0].message).toContain('Value is not allowed');
     });
   });
 
