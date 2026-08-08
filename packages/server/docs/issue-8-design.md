@@ -58,7 +58,7 @@ flowchart TD
     D --> E["Extract Parameter Metadata List"]
     E --> F{"Parameter has Zod Schema?"}
     F -->|No Schema| G["Extract Raw Value"]
-    F -->|Has Schema| H["Run schema.safeParse(rawValue)"]
+    F -->|Has Schema| H["Run schema.safeParseAsync(rawValue) when available, otherwise safeParse"]
     H -->|Success| I["Use parsed/coerced data as argument"]
     H -->|Failure| J["Throw ValidationError with Zod field details"]
     G --> K["Assemble Arguments Array"]
@@ -160,7 +160,7 @@ sequenceDiagram
     Caller->>Registry: dispatch("POST", "/api/v1/users", reqContext)
     Registry->>Registry: Match route /api/v1/users
     Registry->>Extractor: Extract and validate parameters
-    Extractor->>Extractor: Run Zod schema.safeParse(reqContext.body)
+    Extractor->>Extractor: Run Zod schema.safeParseAsync(reqContext.body) when available
     alt Validation Failure
         Extractor-->>Registry: throw ValidationError(details)
         Registry->>ErrorEngine: createErrorTupleFrame(400, "Validation failed", details, reqId)

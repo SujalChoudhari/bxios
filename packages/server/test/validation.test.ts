@@ -35,6 +35,11 @@ describe('Zod Validation & Error Handler Middleware', () => {
     id: z.string().uuid('ID must be a valid UUID')
   });
 
+  const AsyncSchema = z.string().refine(async (value) => value === 'allowed', 'Value is not allowed');
+  const AsyncOperationalSchema = z.string().refine(async () => {
+    throw new Error('Async refinement service unavailable');
+  });
+
   @Controller('/api/v1')
   class TestController {
     @Post('/users')
@@ -65,6 +70,16 @@ describe('Zod Validation & Error Handler Middleware', () => {
     @Get('/secure')
     secureRoute(@Headers('x-api-key', z.string().min(10, 'API key too short')) apiKey: string) {
       return { success: true, apiKey };
+    }
+
+    @Post('/async-validation')
+    asyncValidation(@Body(AsyncSchema) value: string) {
+      return { success: true, value };
+    }
+
+    @Post('/async-operational-failure')
+    asyncOperationalFailure(@Body(AsyncOperationalSchema) value: string) {
+      return { success: true, value };
     }
 
     @Get('/sync-fail')
@@ -155,6 +170,14 @@ describe('Zod Validation & Error Handler Middleware', () => {
         apiKey: 'super-secret-api-key-12345'
       });
     });
+
+    it('accepts a value when an async Zod refinement succeeds', async () => {
+      const res = await registry.dispatch('POST', '/api/v1/async-validation', {
+        body: 'allowed'
+      });
+
+      expect(res).toEqual({ success: true, value: 'allowed' });
+    });
   });
 
   describe('Validation Failures & 400 Bad Request Tuple Frames', () => {
@@ -213,6 +236,32 @@ describe('Zod Validation & Error Handler Middleware', () => {
       expect(isErrorTupleFrame(res)).toBe(true);
       expect(res.code).toBe(400);
       expect(res.payload.details?.[0].message).toContain('API key too short');
+    });
+
+    it('returns 400 tuple frame when an async Zod refinement fails', async () => {
+      const res = await registry.dispatch('POST', '/api/v1/async-validation', {
+        id: 'req-400-async',
+        body: 'rejected'
+      });
+
+      expect(isErrorTupleFrame(res)).toBe(true);
+      expect(res.code).toBe(400);
+      expect(res.id).toBe('req-400-async');
+      expect(res.payload.details?.[0].message).toContain('Value is not allowed');
+    });
+
+    it('returns a 500 tuple frame when an async refinement rejects operationally', async () => {
+      const res = await registry.dispatch('POST', '/api/v1/async-operational-failure', {
+        id: 'req-500-async-refinement',
+        body: 'allowed'
+      });
+
+      expect(isErrorTupleFrame(res)).toBe(true);
+      expect(res.code).toBe(500);
+      expect(res.id).toBe('req-500-async-refinement');
+      expect(res.payload.statusCode).toBe(500);
+      expect(res.payload.error).toBe('Internal Server Error');
+      expect(res.payload.message).toBe('Async refinement service unavailable');
     });
   });
 

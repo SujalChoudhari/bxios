@@ -4,6 +4,7 @@ import {
   formatZodIssues,
   createErrorTupleFrame
 } from './validation.js';
+import { ZodError } from 'zod';
 
 export type ParamType = 'body' | 'query' | 'param' | 'headers' | 'context';
 
@@ -198,7 +199,7 @@ export function pathToRegex(pathPattern: string): { regex: RegExp; paramNames: s
 /**
  * Extract parameter value from request context and apply Zod schema validation if attached
  */
-function extractParamValue(pm: ParamMetadata, req: RequestContext): any {
+async function extractParamValue(pm: ParamMetadata, req: RequestContext): Promise<any> {
   let val: any;
   switch (pm.type) {
     case 'body':
@@ -239,23 +240,38 @@ function extractParamValue(pm: ParamMetadata, req: RequestContext): any {
   }
 
   if (pm.schema) {
-    if (typeof pm.schema.safeParse === 'function') {
-      const parseRes = pm.schema.safeParse(val);
-      if (!parseRes.success) {
-        const details = formatZodIssues(parseRes.error.issues);
-        throw new ValidationError('Validation failed', details);
-      }
-      return parseRes.data;
-    } else if (typeof pm.schema.parse === 'function') {
-      try {
-        return pm.schema.parse(val);
-      } catch (err: any) {
-        if (err && Array.isArray(err.issues)) {
-          const details = formatZodIssues(err.issues);
+    try {
+      // Prefer the async API when available so schemas with async refinements
+      // still produce the same 400 validation response as synchronous schemas.
+      const parseFn = typeof pm.schema.safeParseAsync === 'function'
+        ? pm.schema.safeParseAsync.bind(pm.schema)
+        : typeof pm.schema.safeParse === 'function'
+          ? pm.schema.safeParse.bind(pm.schema)
+          : undefined;
+
+      if (parseFn) {
+        const parseRes = await parseFn(val);
+        if (!parseRes.success) {
+          const details = formatZodIssues(parseRes.error.issues);
           throw new ValidationError('Validation failed', details);
         }
-        throw new ValidationError(err?.message || 'Validation failed');
+        return parseRes.data;
       }
+
+      const parseMethod = typeof pm.schema.parseAsync === 'function'
+        ? pm.schema.parseAsync.bind(pm.schema)
+        : typeof pm.schema.parse === 'function'
+          ? pm.schema.parse.bind(pm.schema)
+          : undefined;
+
+      if (parseMethod) return await parseMethod(val);
+    } catch (err: any) {
+      if (err instanceof ValidationError) throw err;
+      if (err instanceof ZodError) {
+        const details = formatZodIssues(err.issues as Array<{ path: (string | number)[]; message: string; code: string }>);
+        throw new ValidationError('Validation failed', details);
+      }
+      throw err;
     }
   }
 
@@ -413,7 +429,7 @@ export class RouteRegistry {
         const maxIndex = Math.max(...paramMetadata.map((p) => p.index));
         args = new Array(maxIndex + 1);
         for (const pm of paramMetadata) {
-          args[pm.index] = extractParamValue(pm, mergedReq);
+          args[pm.index] = await extractParamValue(pm, mergedReq);
         }
       } else {
         args = [mergedReq];
@@ -428,8 +444,8 @@ export class RouteRegistry {
         return createErrorTupleFrame(400, err.message, err.details, reqId, reqMeta);
       }
 
-      if (err && (err.name === 'ZodError' || Array.isArray(err.issues))) {
-        const details = formatZodIssues(err.issues || []);
+      if (err instanceof ZodError) {
+        const details = formatZodIssues(err.issues as Array<{ path: (string | number)[]; message: string; code: string }>);
         return createErrorTupleFrame(400, 'Validation failed', details, reqId, reqMeta);
       }
 
