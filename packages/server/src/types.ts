@@ -1,12 +1,14 @@
 export type ServerOnConnection = (connectionId: string) => void;
 export type ServerOnMessage = (connectionId: string, data: Uint8Array) => void;
 export type ServerOnClose = (connectionId: string, code?: number, message?: string) => void;
+export type ServerOnDrain = (connectionId: string) => void;
 export type ServerOnError = (connectionId: string, error: Error) => void;
 
 export interface ServerDriverHandlers {
   onConnection?: ServerOnConnection;
   onMessage?: ServerOnMessage;
   onClose?: ServerOnClose;
+  onDrain?: ServerOnDrain;
   onError?: ServerOnError;
 }
 
@@ -24,6 +26,7 @@ export interface IServerDriver {
   onConnection?: ServerOnConnection;
   onMessage?: ServerOnMessage;
   onClose?: ServerOnClose;
+  onDrain?: ServerOnDrain;
   onError?: ServerOnError;
 
   port?: number;

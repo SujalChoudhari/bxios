@@ -7,6 +7,7 @@ import {
   ServerOnConnection,
   ServerOnMessage,
   ServerOnClose,
+  ServerOnDrain,
   ServerOnError,
   parseListenArgs
 } from './types.js';
@@ -16,6 +17,7 @@ export class WSServerDriver implements IServerDriver {
   public onConnection?: ServerOnConnection;
   public onMessage?: ServerOnMessage;
   public onClose?: ServerOnClose;
+  public onDrain?: ServerOnDrain;
   public onError?: ServerOnError;
 
   public port?: number;
@@ -54,6 +56,13 @@ export class WSServerDriver implements IServerDriver {
           parsed.handlers!.onClose!(connectionId, code, message);
         };
       }
+      if (parsed.handlers.onDrain) {
+        const previous = this.onDrain;
+        this.onDrain = (connectionId) => {
+          previous?.(connectionId);
+          parsed.handlers!.onDrain!(connectionId);
+        };
+      }
       if (parsed.handlers.onError) this.onError = parsed.handlers.onError;
     }
 
@@ -83,6 +92,8 @@ export class WSServerDriver implements IServerDriver {
           const id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2);
           this.connections.set(id, ws);
           this.onConnection?.(id);
+
+          (ws as any)._socket?.on('drain', () => this.onDrain?.(id));
 
           ws.on('message', (data: RawData, isBinary: boolean) => {
             /**
