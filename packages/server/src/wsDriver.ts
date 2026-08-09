@@ -40,8 +40,20 @@ export class WSServerDriver implements IServerDriver {
 
     if (parsed.handlers) {
       if (parsed.handlers.onConnection) this.onConnection = parsed.handlers.onConnection;
-      if (parsed.handlers.onMessage) this.onMessage = parsed.handlers.onMessage;
-      if (parsed.handlers.onClose) this.onClose = parsed.handlers.onClose;
+      if (parsed.handlers.onMessage) {
+        const previous = this.onMessage;
+        this.onMessage = (connectionId, data) => {
+          previous?.(connectionId, data);
+          parsed.handlers!.onMessage!(connectionId, data);
+        };
+      }
+      if (parsed.handlers.onClose) {
+        const previous = this.onClose;
+        this.onClose = (connectionId, code, message) => {
+          previous?.(connectionId, code, message);
+          parsed.handlers!.onClose!(connectionId, code, message);
+        };
+      }
       if (parsed.handlers.onError) this.onError = parsed.handlers.onError;
     }
 
