@@ -7,6 +7,7 @@ import {
   ServerOnConnection,
   ServerOnMessage,
   ServerOnClose,
+  ServerOnDrain,
   ServerOnError,
   parseListenArgs
 } from './types.js';
@@ -36,6 +37,7 @@ export class UWSServerDriver implements IServerDriver {
   public onConnection?: ServerOnConnection;
   public onMessage?: ServerOnMessage;
   public onClose?: ServerOnClose;
+  public onDrain?: ServerOnDrain;
   public onError?: ServerOnError;
 
   public port?: number;
@@ -73,6 +75,13 @@ export class UWSServerDriver implements IServerDriver {
         this.onClose = (connectionId, code, message) => {
           previous?.(connectionId, code, message);
           parsed.handlers!.onClose!(connectionId, code, message);
+        };
+      }
+      if (parsed.handlers.onDrain) {
+        const previous = this.onDrain;
+        this.onDrain = (connectionId) => {
+          previous?.(connectionId);
+          parsed.handlers!.onDrain!(connectionId);
         };
       }
       if (parsed.handlers.onError) this.onError = parsed.handlers.onError;
@@ -117,6 +126,9 @@ export class UWSServerDriver implements IServerDriver {
               const reason = message && message.byteLength > 0 ? Buffer.from(message).toString('utf8') : '';
               this.onClose?.(id, code, reason);
             }
+          },
+          drain: (ws: any) => {
+            if (ws.id) this.onDrain?.(ws.id);
           }
         });
 

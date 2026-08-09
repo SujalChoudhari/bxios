@@ -212,4 +212,34 @@ describe('multiplexed streaming integration', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(transport.sendTimes[0] - started).toBeGreaterThanOrEqual(10);
   });
+
+  it('pauses generator execution above the default 1 MiB threshold and resumes on drain', async () => {
+    const transport = new Loopback() as Loopback & { buffered: number };
+    transport.buffered = 0;
+    let pulls = 0;
+    const engine = new MultiplexedStreamingEngine(transport, {
+      backpressurePollIntervalMs: 100,
+      backpressureTimeoutMs: 500,
+      handler: async () => {
+        transport.buffered = 1024 * 1024 + 1;
+        return (async function* () {
+          pulls++;
+          yield 'after-drain';
+        })();
+      },
+    });
+    transport.getBufferedAmount = () => transport.buffered;
+
+    await engine.handleMessage('connection', encodeFrame(createStreamStartFrame('drain', 14, {})));
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(pulls).toBe(0);
+
+    transport.buffered = 0;
+    transport.onDrain?.('connection');
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(pulls).toBe(1);
+    expect(transport.sent.at(-1)).toMatchObject({ type: FrameType.StreamEnd, streamId: 14 });
+    expect(transport.sent.some(frame => frame.type === FrameType.StreamChunk && frame.streamId === 14)).toBe(true);
+  });
 });

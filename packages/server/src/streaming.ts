@@ -64,6 +64,8 @@ export class MultiplexedStreamingEngine {
   private active = new Map<string, ActiveStream>();
   private previousOnMessage?: IServerDriver['onMessage'];
   private previousOnClose?: IServerDriver['onClose'];
+  private previousOnDrain?: IServerDriver['onDrain'];
+  private drainWaiters = new Map<string, Set<() => void>>();
   private readonly options: Required<Pick<MultiplexedStreamingEngineOptions, 'backpressureHighWaterMark' | 'backpressurePollIntervalMs' | 'backpressureTimeoutMs' | 'cancellationTimeoutMs'>> & MultiplexedStreamingEngineOptions;
 
   constructor(private readonly driver: IServerDriver, options: MultiplexedStreamingEngineOptions = {}) {
@@ -76,6 +78,7 @@ export class MultiplexedStreamingEngine {
     };
     this.previousOnMessage = driver.onMessage;
     this.previousOnClose = driver.onClose;
+    this.previousOnDrain = driver.onDrain;
     driver.onMessage = (connectionId, data) => {
       try {
         this.previousOnMessage?.(connectionId, data);
@@ -88,6 +91,17 @@ export class MultiplexedStreamingEngine {
         this.previousOnClose?.(connectionId, code, message);
       } finally {
         this.cancelConnection(connectionId);
+      }
+    };
+    driver.onDrain = (connectionId) => {
+      try {
+        this.previousOnDrain?.(connectionId);
+      } finally {
+        const waiters = this.drainWaiters.get(connectionId);
+        if (waiters) {
+          for (const resolve of waiters) resolve();
+          this.drainWaiters.delete(connectionId);
+        }
       }
     };
   }
@@ -140,6 +154,7 @@ export class MultiplexedStreamingEngine {
       active.iterator = await toAsyncIterator(value);
 
       while (!active.controller.signal.aborted) {
+        if (!(await this.waitForWritable(connectionId, active.controller.signal))) break;
         const next = await this.raceAbort(Promise.resolve().then(() => active.iterator!.next()), active.controller.signal);
         if (next === undefined || next.done || active.controller.signal.aborted) break;
         await this.send(connectionId, encodeFrame(createStreamChunkFrame(id, streamId, next.value)));
@@ -189,6 +204,32 @@ export class MultiplexedStreamingEngine {
     if (this.driver.send(connectionId, data) === false) throw new Error('Stream send failed');
   }
 
+  private async waitForWritable(connectionId: string, signal: AbortSignal): Promise<boolean> {
+    const deadline = Date.now() + this.options.backpressureTimeoutMs;
+    while (this.driver.getBufferedAmount(connectionId) > this.options.backpressureHighWaterMark) {
+      if (signal.aborted) return false;
+      if (Date.now() >= deadline) throw new Error('Stream backpressure timeout');
+
+      let resolveDrain!: () => void;
+      const drained = new Promise<void>((resolve) => { resolveDrain = resolve; });
+      const waiters = this.drainWaiters.get(connectionId) ?? new Set<() => void>();
+      waiters.add(resolveDrain);
+      this.drainWaiters.set(connectionId, waiters);
+
+      // Close the event/poll race: the buffer may have drained between the
+      // condition above and registering the onDrain waiter.
+      if (this.driver.getBufferedAmount(connectionId) <= this.options.backpressureHighWaterMark) resolveDrain();
+      const resumed = await this.raceAbort(Promise.race([
+        drained.then(() => true),
+        delay(this.options.backpressurePollIntervalMs).then(() => true),
+      ]), signal);
+      waiters.delete(resolveDrain);
+      if (waiters.size === 0) this.drainWaiters.delete(connectionId);
+      if (resumed === undefined) return false;
+    }
+    return !signal.aborted;
+  }
+
   private async safeSendEnd(connectionId: string, id: string, streamId: number, code: number, message: string): Promise<void> {
     try { await this.send(connectionId, encodeFrame(createStreamEndFrame(id, streamId, code, { message }))); } catch { /* connection may already be closed */ }
   }
@@ -201,6 +242,9 @@ export class MultiplexedStreamingEngine {
   }
 
   private cancelConnection(connectionId: string): void {
+    const waiters = this.drainWaiters.get(connectionId);
+    if (waiters) for (const resolve of waiters) resolve();
+    this.drainWaiters.delete(connectionId);
     for (const [key, active] of this.active) if (key.startsWith(`${connectionId}:`)) {
       active.controller.abort();
       void this.cleanupCancellation(connectionId, Number(key.slice(connectionId.length + 1)), active).catch(() => undefined);
