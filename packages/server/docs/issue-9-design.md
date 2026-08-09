@@ -2,6 +2,10 @@
 
 The engine layers stream lifecycle handling over the existing WebSocket drivers and wire tuple codec. A client allocates a local stream ID and sends frame type 1. The server acknowledges the stream, forwards MessagePack-encoded values as frame type 2, and terminates with frame type 3. A client `ReadableStream.cancel()` sends frame type 4; the server aborts the associated `AbortController` and calls the iterator's `return()` hook.
 
+Driver callbacks are composable: `listen(..., handlers)` chains supplied handlers after callbacks already registered by an engine, so constructing the engine before listening remains supported. Streaming sends consult `getBufferedAmount()` before every frame and wait below a configurable high-water mark; a bounded send timeout turns a stuck transport into a controlled stream error.
+
+Cancellation is cooperative but bounded. The engine races handler/iterator `next()` operations against the abort signal, invokes `return()` immediately, and waits only for the configured cleanup grace period. A JavaScript promise that has no cancellation primitive cannot be forcibly stopped; when cleanup exceeds the bound, the engine removes its stream state and invokes `onCancellationTimeout` so the non-cooperative resource is observable rather than silently treated as cleaned up. Handlers should use the supplied `AbortSignal` and make `return()` release their underlying I/O.
+
 ## Class and interface diagram
 
 ```mermaid

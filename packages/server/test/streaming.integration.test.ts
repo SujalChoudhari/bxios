@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { WebSocket } from 'ws';
 import { MultiplexedStreamingClient } from '../../bxios/src/streaming.js';
-import { decodeFrame, FrameType } from '@bxios/wire';
+import { createStreamStartFrame, decodeFrame, encodeFrame, FrameType } from '@bxios/wire';
 import { MultiplexedStreamingEngine } from '../src/streaming.js';
+import { WSServerDriver } from '../src/wsDriver.js';
 import type { IServerDriver } from '../src/types.js';
 
 class Loopback implements IServerDriver {
@@ -20,11 +22,22 @@ class Loopback implements IServerDriver {
   send(connectionIdOrData: string | Uint8Array, maybeData?: Uint8Array): boolean {
     const data = typeof connectionIdOrData === 'string' ? maybeData! : connectionIdOrData;
     this.sent.push(decodeFrame(data));
-    if (typeof connectionIdOrData === 'string') this.onMessage?.(data);
+    if (typeof connectionIdOrData === 'string') (this.onMessage as any)?.(data);
     else void this.server?.handleMessage('connection', data);
     return true;
   }
   close() {}
+  getBufferedAmount() { return 0; }
+}
+
+class NeverResolvingDriver implements IServerDriver {
+  readonly kind = 'ws' as const;
+  onMessage?: IServerDriver['onMessage'];
+  onClose?: IServerDriver['onClose'];
+  sent: ReturnType<typeof decodeFrame>[] = [];
+  send(_connectionId: string, data: Uint8Array): boolean { this.sent.push(decodeFrame(data)); return true; }
+  close() {}
+  listen() {}
   getBufferedAmount() { return 0; }
 }
 
@@ -78,5 +91,82 @@ describe('multiplexed streaming integration', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(transport.sent.some(frame => frame.type === FrameType.StreamCancel)).toBe(true);
     expect(finalized).toBe(true);
+  });
+
+  it('keeps the engine wired when WSServerDriver.listen receives handlers', async () => {
+    const driver = new WSServerDriver();
+    const engine = new MultiplexedStreamingEngine(driver, {
+      handler: async () => (async function* () { yield 'wired'; })(),
+    });
+    let handlerCalled = false;
+    try {
+      await driver.listen(0, '127.0.0.1', { onMessage: () => { handlerCalled = true; } });
+      const connected = new WebSocket(`ws://127.0.0.1:${driver.port}`);
+      await new Promise<void>((resolve, reject) => { connected.once('open', () => resolve()); connected.once('error', reject); });
+      const frames: ReturnType<typeof decodeFrame>[] = [];
+      const allFrames = new Promise<void>((resolve) => {
+        connected.on('message', (data: Buffer) => {
+          frames.push(decodeFrame(new Uint8Array(data)));
+          if (frames.some((frame) => frame.type === FrameType.StreamEnd)) resolve();
+        });
+      });
+      connected.send(encodeFrame(createStreamStartFrame('real-ws', 7, { path: '/wired' })));
+      await allFrames;
+      expect(handlerCalled).toBe(true);
+      expect(frames.map((frame) => frame.type)).toEqual([FrameType.StreamStart, FrameType.StreamChunk, FrameType.StreamEnd]);
+      connected.close();
+    } finally {
+      await driver.close();
+    }
+  });
+
+  it('turns malformed stream payloads into a controlled stream error', async () => {
+    const transport = new Loopback();
+    const engine = new MultiplexedStreamingEngine(transport, { handler: async () => [] });
+    await engine.handleMessage('connection', encodeFrame({ type: FrameType.StreamStart, id: 'bad', streamId: 9, data: new Uint8Array([0xc1]) }));
+    expect(transport.sent.at(-1)).toMatchObject({ type: FrameType.StreamEnd, streamId: 9, code: 400 });
+  });
+
+  it('bounds cancellation cleanup for an iterator whose next never resolves', async () => {
+    const transport = new NeverResolvingDriver();
+    let returned = false;
+    let timedOut = false;
+    const engine = new MultiplexedStreamingEngine(transport, {
+      cancellationTimeoutMs: 10,
+      onCancellationTimeout: () => { timedOut = true; },
+      handler: async () => ({
+        next: () => new Promise<IteratorResult<unknown>>(() => undefined),
+        return: async () => { returned = true; return { done: true, value: undefined }; },
+        [Symbol.asyncIterator]() { return this; },
+      }),
+    });
+    await engine.handleMessage('connection', encodeFrame(createStreamStartFrame('stuck', 10, {})));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const started = Date.now();
+    engine.cancel('connection', 10);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(returned).toBe(true);
+    expect(timedOut).toBe(false);
+  });
+
+  it('waits for the driver high-water mark before sending the next chunk', async () => {
+    const transport = new Loopback() as Loopback & { buffered: number; sendTimes: number[] };
+    transport.buffered = 10;
+    transport.sendTimes = [];
+    transport.getBufferedAmount = () => transport.buffered;
+    const originalSend = transport.send.bind(transport);
+    transport.send = ((connectionIdOrData: string | Uint8Array, data?: Uint8Array) => {
+      transport.sendTimes.push(Date.now());
+      return typeof connectionIdOrData === 'string'
+        ? originalSend(connectionIdOrData, data!)
+        : originalSend(connectionIdOrData);
+    }) as typeof transport.send;
+    const engine = new MultiplexedStreamingEngine(transport, { backpressureHighWaterMark: 0, backpressurePollIntervalMs: 2, backpressureTimeoutMs: 100 });
+    const started = Date.now();
+    setTimeout(() => { transport.buffered = 0; }, 15);
+    await engine.handleMessage('connection', encodeFrame(createStreamStartFrame('flow', 11, {})));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(transport.sendTimes[0] - started).toBeGreaterThanOrEqual(10);
   });
 });
