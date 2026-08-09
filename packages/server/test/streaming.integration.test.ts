@@ -5,6 +5,7 @@ import { createStreamStartFrame, decodeFrame, encodeFrame, FrameType } from '@bx
 import { MultiplexedStreamingEngine } from '../src/streaming.js';
 import { WSServerDriver } from '../src/wsDriver.js';
 import type { IServerDriver } from '../src/types.js';
+import { Controller, Get, HttpError, RouteRegistry } from '../src/index.js';
 
 class Loopback implements IServerDriver {
   readonly kind = 'ws' as const;
@@ -125,6 +126,48 @@ describe('multiplexed streaming integration', () => {
     const engine = new MultiplexedStreamingEngine(transport, { handler: async () => [] });
     await engine.handleMessage('connection', encodeFrame({ type: FrameType.StreamStart, id: 'bad', streamId: 9, data: new Uint8Array([0xc1]) }));
     expect(transport.sent.at(-1)).toMatchObject({ type: FrameType.StreamEnd, streamId: 9, code: 400 });
+  });
+
+  it('preserves router error status and metadata in the stream end frame', async () => {
+    @Controller('/router')
+    class RouterController {
+      @Get('/error')
+      error() { throw new HttpError(429, 'Too many requests'); }
+    }
+    const router = new RouteRegistry();
+    router.registerController(RouterController);
+    const transport = new Loopback();
+    const engine = new MultiplexedStreamingEngine(transport, { router });
+
+    await engine.handleMessage('connection', encodeFrame(createStreamStartFrame('router-error', 12, {
+      path: '/router/error',
+      headers: { 'x-request': 'router' },
+    })));
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(transport.sent.map(frame => frame.type)).toEqual([FrameType.StreamStart, FrameType.StreamEnd]);
+    expect(transport.sent.at(-1)).toMatchObject({
+      type: FrameType.StreamEnd,
+      streamId: 12,
+      code: 429,
+      metadata: { 'x-request': 'router' },
+    });
+  });
+
+  it('ends an acknowledged stream when no handler or router is configured', async () => {
+    const transport = new Loopback();
+    const engine = new MultiplexedStreamingEngine(transport);
+
+    await engine.handleMessage('connection', encodeFrame(createStreamStartFrame('no-engine', 13, {})));
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    expect(transport.sent.map(frame => frame.type)).toEqual([FrameType.StreamStart, FrameType.StreamEnd]);
+    expect(transport.sent.at(-1)).toMatchObject({
+      type: FrameType.StreamEnd,
+      streamId: 13,
+      code: 500,
+      metadata: { message: 'Streaming engine requires a handler or router' },
+    });
   });
 
   it('bounds cancellation cleanup for an iterator whose next never resolves', async () => {

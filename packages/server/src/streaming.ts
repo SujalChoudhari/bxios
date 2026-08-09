@@ -10,6 +10,7 @@ import {
 } from '@bxios/wire';
 import type { IServerDriver } from './types.js';
 import type { RouteRegistry, RequestContext } from './router.js';
+import { isErrorTupleFrame } from './validation.js';
 
 export type StreamingValue = AsyncIterable<unknown> | Iterable<unknown> | ReadableStream<unknown>;
 export type StreamingHandler = (
@@ -122,9 +123,20 @@ export class MultiplexedStreamingEngine {
     try {
       const handlerResult = this.options.handler
         ? Promise.resolve().then(() => this.options.handler!(request as RequestContext, active.controller.signal))
-        : Promise.resolve().then(() => this.options.router?.handle({ ...request, id, frameId: id, signal: active.controller.signal } as RequestContext));
+        : this.options.router
+          ? Promise.resolve().then(() => this.options.router!.handle({ ...request, id, frameId: id, signal: active.controller.signal } as RequestContext))
+          : Promise.reject(new Error('Streaming engine requires a handler or router'));
       const value = await this.raceAbort(handlerResult, active.controller.signal);
       if (value === undefined || active.controller.signal.aborted) return;
+      if (this.options.router && isErrorTupleFrame(value)) {
+        await this.send(connectionId, encodeFrame(createStreamEndFrame(
+          id,
+          streamId,
+          value.code,
+          value.metadata,
+        )));
+        return;
+      }
       active.iterator = await toAsyncIterator(value);
 
       while (!active.controller.signal.aborted) {
