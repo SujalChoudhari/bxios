@@ -11,6 +11,7 @@ import {
   ServerOnError,
   parseListenArgs
 } from './types.js';
+import { AuthSessionManager, extractAuthToken, type SessionContext, type AuthRequestHeaders } from './auth.js';
 
 let cachedUWS: any = undefined;
 
@@ -47,10 +48,14 @@ export class UWSServerDriver implements IServerDriver {
   private listenSocket: any = null;
   private connections = new Map<string, any>();
   private options: ServerDriverOptions;
+  private auth: AuthSessionManager;
 
   constructor(options: ServerDriverOptions = {}) {
     this.options = options;
+    this.auth = new AuthSessionManager(options.auth);
   }
+
+  public getSessionContext(connectionId: string): SessionContext | undefined { return this.auth.get(connectionId); }
 
   public async listen(
     hostOrPort?: string | number | ServerDriverOptions,
@@ -96,6 +101,17 @@ export class UWSServerDriver implements IServerDriver {
       try {
         this.app = uWS.App(this.options);
         this.app.ws('/*', {
+          upgrade: (res: any, req: any, context: any) => {
+            if (!this.auth.enabled) {
+              res.upgrade({}, req.getHeader('sec-websocket-key'), req.getHeader('sec-websocket-protocol'), context);
+              return;
+            }
+            const headers: AuthRequestHeaders = { cookie: req.getHeader('cookie'), 'sec-websocket-protocol': req.getHeader('sec-websocket-protocol') };
+            void this.auth.authenticateHeaders('handshake', headers).then(authContext => {
+              if (!authContext && this.auth.required) { res.writeStatus('401 Unauthorized').end(); return; }
+              res.upgrade({ authContext, authToken: extractAuthToken(headers, this.options.auth) }, req.getHeader('sec-websocket-key'), req.getHeader('sec-websocket-protocol'), context);
+            }).catch(() => res.writeStatus('401 Unauthorized').end());
+          },
           compression: this.options.compression ?? uWS.SHARED_COMPRESSOR,
           maxPayloadLength: this.options.maxPayloadLength ?? 16 * 1024 * 1024,
           idleTimeout: this.options.idleTimeout ?? 120,
@@ -103,6 +119,7 @@ export class UWSServerDriver implements IServerDriver {
             const id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2);
             ws.id = id;
             this.connections.set(id, ws);
+            if (this.auth.enabled && ws.getUserData?.().authContext) this.auth.associate(id, ws.getUserData().authContext);
             this.onConnection?.(id);
           },
           message: (ws: any, message: ArrayBuffer, isBinary: boolean) => {
@@ -116,6 +133,7 @@ export class UWSServerDriver implements IServerDriver {
              */
             const copy = copyBuffer(message);
             if (ws.id) {
+              void this.auth.handleFrame(ws.id, copy, payload => this.send(ws.id, payload));
               this.onMessage?.(ws.id, copy);
             }
           },
@@ -123,6 +141,7 @@ export class UWSServerDriver implements IServerDriver {
             const id = ws.id;
             if (id) {
               this.connections.delete(id);
+              this.auth.remove(id);
               const reason = message && message.byteLength > 0 ? Buffer.from(message).toString('utf8') : '';
               this.onClose?.(id, code, reason);
             }

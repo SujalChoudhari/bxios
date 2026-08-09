@@ -18,6 +18,7 @@ export interface ServerDriverOptions {
   idleTimeout?: number;
   maxPayloadLength?: number;
   compression?: number;
+  auth?: import('./auth.js').ServerAuthOptions;
   [key: string]: any;
 }
 
@@ -41,6 +42,7 @@ export interface IServerDriver {
   send(connectionId: string, data: Uint8Array): boolean | void;
   close(connectionId?: string): Promise<void> | void;
   getBufferedAmount(connectionId?: string): number;
+  getSessionContext?(connectionId: string): import('./auth.js').SessionContext | undefined;
 }
 
 export type ServerDriver = IServerDriver;

@@ -39,3 +39,7 @@ export function createStreamEndFrame(id: string, streamId: number, code = 200, m
 export function createStreamCancelFrame(id: string, streamId: number, reason?: unknown): FrameTuple {
   return { type: FrameType.StreamCancel, id, streamId, data: reason === undefined ? new Uint8Array() : encodeStreamValue(reason) };
 }
+
+export function createAuthRefreshFrame(id: string, token: string): FrameTuple {
+  return { type: FrameType.Auth, id, data: encodeStreamValue({ token }) };
+}

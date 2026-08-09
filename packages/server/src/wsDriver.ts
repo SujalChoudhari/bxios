@@ -11,6 +11,7 @@ import {
   ServerOnError,
   parseListenArgs
 } from './types.js';
+import { AuthSessionManager, type SessionContext } from './auth.js';
 
 export class WSServerDriver implements IServerDriver {
   public readonly kind = 'ws' as const;
@@ -26,10 +27,14 @@ export class WSServerDriver implements IServerDriver {
   private wss: WebSocketServer | null = null;
   private connections = new Map<string, WebSocket>();
   private options: ServerDriverOptions;
+  private auth: AuthSessionManager;
 
   constructor(options: ServerDriverOptions = {}) {
     this.options = options;
+    this.auth = new AuthSessionManager(options.auth);
   }
+
+  public getSessionContext(connectionId: string): SessionContext | undefined { return this.auth.get(connectionId); }
 
   public async listen(
     hostOrPort?: string | number | ServerDriverOptions,
@@ -72,7 +77,12 @@ export class WSServerDriver implements IServerDriver {
           {
             port: this.port,
             host: this.host,
-            ...this.options
+            ...this.options,
+            ...(this.auth.enabled ? { verifyClient: (info: any, done: (verified: boolean) => void) => {
+              void this.auth.authenticateHeaders('handshake', info.req.headers).then(context => {
+                done(!!context || !this.auth.required);
+              }).catch(() => done(false));
+            } } : {})
           },
           () => {
             const addr = this.wss?.address();
@@ -88,9 +98,10 @@ export class WSServerDriver implements IServerDriver {
           reject(err);
         });
 
-        this.wss.on('connection', (ws: WebSocket) => {
+        this.wss.on('connection', async (ws: WebSocket, request: any) => {
           const id = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2);
           this.connections.set(id, ws);
+          if (this.auth.enabled) await this.auth.authenticateHeaders(id, request.headers);
           this.onConnection?.(id);
 
           (ws as any)._socket?.on('drain', () => this.onDrain?.(id));
@@ -103,11 +114,13 @@ export class WSServerDriver implements IServerDriver {
              * all server drivers for consistent behavior and zero side effects.
              */
             const copy = copyBuffer(data as Buffer);
+            void this.auth.handleFrame(id, copy, payload => this.send(id, payload));
             this.onMessage?.(id, copy);
           });
 
           ws.on('close', (code: number, reason: Buffer) => {
             this.connections.delete(id);
+            this.auth.remove(id);
             const reasonStr = reason ? reason.toString('utf8') : '';
             this.onClose?.(id, code, reasonStr);
           });

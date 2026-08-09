@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WebSocket } from 'ws';
+import { createAuthRefreshFrame, decodeFrame, encodeFrame, FrameType } from '@bxios/wire';
 import {
   copyBuffer,
   WSServerDriver,
   UWSServerDriver,
   createServerDriver,
   isUWSAvailable,
-  IServerDriver
+  IServerDriver,
 } from '../src/index.js';
 
 describe('copyBuffer pure helper', () => {
@@ -268,6 +269,96 @@ describe('createServerDriver Factory', () => {
       expect(driver.kind).toBe('uws');
     } else {
       expect(driver.kind).toBe('ws');
+    }
+  });
+});
+
+describe('handshake authentication and AUTH_REFRESH', () => {
+  it('authenticates from Cookie, keeps a persistent session context, and refreshes without closing', async () => {
+    const driver = new WSServerDriver({
+      auth: {
+        cookieNames: ['session'],
+        validate: async (token) => token === 'initial' || token === 'renewed' ? { userId: 'user-1' } : false,
+      },
+    });
+    let connectionId = '';
+    driver.onConnection = id => { connectionId = id; };
+    await driver.listen(0, '127.0.0.1');
+    const client = new WebSocket(`ws://127.0.0.1:${driver.port}`, {
+      headers: { Cookie: 'session=initial' },
+    });
+    const frames: ReturnType<typeof decodeFrame>[] = [];
+    client.on('message', data => frames.push(decodeFrame(new Uint8Array(data as Buffer))));
+    try {
+      await new Promise<void>((resolve, reject) => { client.once('open', () => resolve()); client.once('error', reject); });
+      const before = driver.getSessionContext(connectionId)!;
+      expect(before.identity).toEqual({ userId: 'user-1' });
+      const sessionId = before.sessionId;
+      client.send(encodeFrame(createAuthRefreshFrame('cookie-refresh', 'renewed')));
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('auth refresh timeout')), 1000);
+        const check = () => frames.some(frame => frame.id === 'cookie-refresh') ? (clearTimeout(timer), resolve()) : setTimeout(check, 5);
+        check();
+      });
+      expect(frames.at(-1)).toMatchObject({ type: FrameType.Auth, code: 200 });
+      expect(driver.getSessionContext(connectionId)!.sessionId).toBe(sessionId);
+      expect(driver.getSessionContext(connectionId)!.token).toBe('renewed');
+    } catch (error) {
+      client.close();
+      await driver.close();
+      throw error;
+    }
+    client.close();
+    await driver.close();
+  });
+
+  it('supports Sec-WebSocket-Protocol token and refreshes the same socket/session', async () => {
+    const driver = new WSServerDriver({
+      auth: {
+        protocolPrefix: 'auth.',
+        validate: (token) => token === 'first' || token === 'second' ? { subject: 'alice' } : false,
+      },
+    });
+    let connectionId = '';
+    driver.onConnection = id => { connectionId = id; };
+    await driver.listen(0, '127.0.0.1');
+    const client = new WebSocket(`ws://127.0.0.1:${driver.port}`, ['auth.first']);
+    const frames: ReturnType<typeof decodeFrame>[] = [];
+    try {
+      client.on('message', data => frames.push(decodeFrame(new Uint8Array(data as Buffer))));
+      await new Promise<void>((resolve, reject) => { client.once('open', () => resolve()); client.once('error', reject); });
+      const before = driver.getSessionContext(connectionId)!;
+      expect(before.identity).toEqual({ subject: 'alice' });
+      const sessionId = before.sessionId;
+      client.send(encodeFrame(createAuthRefreshFrame('refresh-1', 'second')));
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('auth refresh timeout')), 1000);
+        const check = () => frames.some(frame => frame.id === 'refresh-1') ? (clearTimeout(timer), resolve()) : setTimeout(check, 5);
+        check();
+      });
+      expect(frames.at(-1)).toMatchObject({ type: FrameType.Auth, code: 200 });
+      expect(driver.getSessionContext(connectionId)!.sessionId).toBe(sessionId);
+      expect(driver.getSessionContext(connectionId)!.token).toBe('second');
+      expect(client.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      client.close();
+      await driver.close();
+    }
+  });
+
+  it('rejects an unauthenticated upgrade when auth is required', async () => {
+    const driver = new WSServerDriver({ auth: { validate: () => false } });
+    await driver.listen(0, '127.0.0.1');
+    const client = new WebSocket(`ws://127.0.0.1:${driver.port}`);
+    try {
+      await expect(new Promise<void>((resolve, reject) => {
+        client.once('open', () => reject(new Error('unauthenticated socket opened')));
+        client.once('unexpected-response', (_request, response) => response.statusCode === 401 ? resolve() : reject(new Error(`unexpected status ${response.statusCode}`)));
+        client.once('error', () => undefined);
+      })).resolves.toBeUndefined();
+    } finally {
+      client.close();
+      await driver.close();
     }
   });
 });
