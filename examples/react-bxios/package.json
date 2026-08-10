@@ -1,0 +1,8 @@
+{
+  "name": "@bxios/example-react",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "tsc -p tsconfig.json", "test": "tsc -p tsconfig.json --noEmit" },
+  "dependencies": { "@bxios/bxios": "workspace:*", "@bxios/server": "workspace:*", "react": "^18.3.1" },
+  "devDependencies": { "@types/react": "^18.3.3", "typescript": "^5.4.5" }
+}
