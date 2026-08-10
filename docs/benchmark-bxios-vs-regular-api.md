@@ -56,6 +56,15 @@ Full raw result table from that JSON:
 | regular_http_sse | 100 | 14.543 | 18.303 | 19.732 | 5,838.787 | 0 | 4,000 |
 | bxios_multiplexed_msgpack_websocket | 100 | 31.732 | 40.113 | 43.138 | 2,710.657 | 0 | 4,000 |
 
+For comparison, the preserved original single-client command `pnpm benchmark` still runs its 30-warm-up/300-sequential-sample harness. Its previously recorded baseline was:
+
+| Path | Median (ms) | p95 (ms) | Mean (ms) | Throughput (ops/s) |
+| --- | ---: | ---: | ---: | ---: |
+| Regular HTTP JSON unary | 1.822 | 2.209 | 1.791 | 558.20 |
+| bxios MessagePack/WebSocket unary | 0.127 | 0.248 | 0.155 | 6,463.19 |
+| Regular HTTP SSE stream (10 events) | 1.727 | 2.148 | 1.745 | 572.99 |
+| bxios multiplexed MessagePack/WebSocket stream (10 chunks) | 0.508 | 1.048 | 0.646 | 1,549.15 |
+
 ## Interpretation
 
 In this run, unary bxios was slightly slower at one client but had lower median/p95 and higher aggregate throughput at 10 and 100 clients. The regular SSE path had lower latency and higher throughput than bxios multiplexed streaming at every tested count, with the gap widening at 100 clients. Latency rose as synchronized client count increased, while aggregate throughput rose because more operations were in flight. This describes this harness and host—not a universal “10x” result.
