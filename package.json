@@ -3,10 +3,16 @@
   "private": true,
   "scripts": {
     "build": "pnpm --filter \"@bxios/*\" build",
-    "test": "pnpm --filter \"@bxios/*\" test"
+    "test": "pnpm --filter \"@bxios/*\" test",
+    "test:e2e": "pnpm build && vitest run e2e"
   },
   "devDependencies": {
+    "@bxios/bxios": "workspace:*",
+    "@bxios/server": "workspace:*",
+    "@bxios/wire": "workspace:*",
+    "@types/ws": "^8.5.10",
     "typescript": "^5.4.5",
-    "vitest": "^1.6.0"
+    "vitest": "^1.6.0",
+    "ws": "^8.16.0"
   }
 }
