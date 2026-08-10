@@ -5,4 +5,5 @@ export * from './wsDriver.js';
 export * from './factory.js';
 export * from './router.js';
 export * from './validation.js';
+export * from './auth.js';
 export * from './streaming.js';
