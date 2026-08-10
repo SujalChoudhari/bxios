@@ -5,7 +5,8 @@
     "build": "pnpm --filter \"@bxios/*\" build",
     "test": "pnpm --filter \"@bxios/*\" test",
     "test:e2e": "pnpm build && vitest run e2e",
-    "benchmark": "pnpm build && node benchmarks/bxios-vs-regular-api.mjs"
+    "benchmark": "pnpm build && node benchmarks/bxios-vs-regular-api.mjs",
+    "benchmark:multi": "pnpm build && node benchmarks/bxios-multi-client.mjs"
   },
   "devDependencies": {
     "@bxios/bxios": "workspace:*",
