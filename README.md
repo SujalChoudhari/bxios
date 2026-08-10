@@ -112,6 +112,16 @@ pnpm --filter @bxios/example-react build
 pnpm --filter @bxios/example-react test
 ```
 
+## Local benchmark: bxios vs regular API
+
+A reproducible loopback microbenchmark compares warmed, connection-reused bxios binary MessagePack/WebSocket unary and multiplexed streaming paths with conventional HTTP JSON and SSE baselines. On the recorded Node.js v22.23.2 Linux run (30 warm-up operations, 300 sequential samples, concurrency 1), bxios measured **0.127 ms median / 0.248 ms p95** for unary versus HTTP JSON at **1.822 ms / 2.209 ms**, and **0.508 ms / 1.048 ms** for a 10-chunk stream versus SSE at **1.727 ms / 2.148 ms**. These are local microbenchmark findings, not a universal speed claim; setup, connection reuse, deployment, payload, and concurrency can change the result.
+
+See the [benchmark methodology, harness, results, and limitations](docs/benchmark-bxios-vs-regular-api.md), or run it with:
+
+```sh
+pnpm benchmark
+```
+
 ## Development and verification
 
 ```sh
