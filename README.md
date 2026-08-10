@@ -114,12 +114,30 @@ pnpm --filter @bxios/example-react test
 
 ## Local benchmark: bxios vs regular API
 
-A reproducible loopback microbenchmark compares warmed, connection-reused bxios binary MessagePack/WebSocket unary and multiplexed streaming paths with conventional HTTP JSON and SSE baselines. On the recorded Node.js v22.23.2 Linux run (30 warm-up operations, 300 sequential samples, concurrency 1), bxios measured **0.127 ms median / 0.248 ms p95** for unary versus HTTP JSON at **1.822 ms / 2.209 ms**, and **0.508 ms / 1.048 ms** for a 10-chunk stream versus SSE at **1.727 ms / 2.148 ms**. These are local microbenchmark findings, not a universal speed claim; setup, connection reuse, deployment, payload, and concurrency can change the result.
+The original single-client benchmark remains available as `pnpm benchmark`. The follow-up matrix uses one independently warmed persistent connection per client, synchronized concurrent operations, and the same payload/server work for each path. Recorded on 2026-08-10 (UTC), Node.js v22.23.2, Linux x64, loopback; 5 warm-up rounds and 40 measured rounds per client count (run 2 selected after a repeat):
 
-See the [benchmark methodology, harness, results, and limitations](docs/benchmark-bxios-vs-regular-api.md), or run it with:
+| Transport | Clients | Median (ms) | p95 (ms) | Throughput (ops/s) | Errors | Command / details |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Regular HTTP JSON unary | 1 | 0.355 | 0.574 | 2,636.212 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+| bxios MessagePack/WebSocket unary | 1 | 0.365 | 0.708 | 2,391.751 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+| Regular HTTP SSE (10 events) | 1 | 0.537 | 0.735 | 1,796.831 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+| bxios multiplexed MessagePack/WebSocket (10 chunks) | 1 | 1.025 | 3.619 | 714.003 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+| Regular HTTP JSON unary | 10 | 2.012 | 2.858 | 4,175.845 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+| bxios MessagePack/WebSocket unary | 10 | 1.142 | 1.990 | 7,127.629 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+| Regular HTTP SSE (10 events) | 10 | 2.290 | 3.392 | 3,519.641 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+| bxios multiplexed MessagePack/WebSocket (10 chunks) | 10 | 4.062 | 9.650 | 1,794.949 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+| Regular HTTP JSON unary | 100 | 11.508 | 16.087 | 7,225.875 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+| bxios MessagePack/WebSocket unary | 100 | 8.873 | 11.266 | 9,997.256 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+| Regular HTTP SSE (10 events) | 100 | 14.543 | 18.303 | 5,838.787 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+| bxios multiplexed MessagePack/WebSocket (10 chunks) | 100 | 31.732 | 40.113 | 2,710.657 | 0 | `pnpm benchmark:multi` / [details](docs/benchmark-bxios-vs-regular-api.md) |
+
+Plain-English reading: the unary bxios path was competitive at one client and had the strongest throughput in this run at 10 and 100 clients; both unary paths showed higher latency as synchronized client count rose. The bxios streaming path degraded more sharply than SSE here, so this test does not support a universal claim that bxios streaming is faster. This is a loopback Node microbenchmark, not a production load test or evidence about WAN/TLS/proxy behavior, HTTP/2 or HTTP/3, or every application workload.
+
+See the [benchmark methodology, harness, full results, and limitations](docs/benchmark-bxios-vs-regular-api.md). Run the original or follow-up benchmark with:
 
 ```sh
-pnpm benchmark
+pnpm benchmark          # preserved single-client baseline
+pnpm benchmark:multi    # reproducible 1/10/100-client matrix
 ```
 
 ## Development and verification

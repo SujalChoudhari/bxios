@@ -1,60 +1,76 @@
-# bxios vs conventional API: local microbenchmark
+# bxios vs conventional API: single-client and multi-client local benchmarks
 
-This benchmark compares the current bxios transport implementation with conventional local Node.js HTTP paths. It is a reproducible microbenchmark, not a claim about universal performance.
+These are bounded, reproducible loopback microbenchmarks. They compare the existing single-client baseline with a follow-up matrix that asks how the paths behave with 1, 10, and 100 independent clients. They are not production load tests and do not establish a universal transport ranking.
 
-## Harness and command
+## Harnesses and exact commands
 
-The committed harness is [`benchmarks/bxios-vs-regular-api.mjs`](../benchmarks/bxios-vs-regular-api.mjs). It starts all four endpoints in one Node process on `127.0.0.1`:
+- Original baseline: [`benchmarks/bxios-vs-regular-api.mjs`](../benchmarks/bxios-vs-regular-api.mjs), run with `pnpm benchmark`.
+- Follow-up matrix: [`benchmarks/bxios-multi-client.mjs`](../benchmarks/bxios-multi-client.mjs), run with `pnpm benchmark:multi`.
 
-- **bxios unary:** `ConnectionManager` + `WSServerDriver`, binary MessagePack `Unary` frames, one persistent WebSocket connection.
-- **Regular unary:** Node `fetch` to an HTTP/1.1 JSON endpoint, with a persistent undici connection pool.
-- **bxios streaming:** `MultiplexedStreamingClient` + `MultiplexedStreamingEngine`, one persistent WebSocket connection, 10 MessagePack stream chunks.
-- **Regular streaming:** Node `fetch` to an HTTP `text/event-stream` endpoint, 10 SSE events.
+`pnpm benchmark` is preserved unchanged as the original single-client benchmark. `pnpm benchmark:multi` builds the workspace first, then runs the matrix and prints JSON to stdout. The matrix is bounded at 5 warm-up rounds and 40 measured rounds for each client count, with counts `[1, 10, 100]`; all three counts completed with zero errors in the recorded run.
 
-Run from the repository root:
+## Method
+
+The matrix compares four paths:
+
+- **Regular HTTP JSON unary:** one HTTP/1.1 keep-alive `http.Agent` with `maxSockets: 1` per client.
+- **bxios MessagePack/WebSocket unary:** one persistent `ConnectionManager` WebSocket per client; unary frames are encoded/decoded through the real bxios wire helpers.
+- **Regular HTTP SSE:** one keep-alive HTTP agent with `maxSockets: 1` per client; each operation receives 10 SSE events.
+- **bxios multiplexed streaming:** one persistent WebSocket and one `MultiplexedStreamingClient` per client; each operation receives 10 MessagePack stream chunks. There is one active stream per client in this matrix, so this tests independent-client concurrency rather than multiple simultaneous stream IDs on one connection.
+
+A “client” is explicitly one independent warmed connection: an HTTP agent constrained to one socket, or one WebSocket connection. Each client performs the same operation once per synchronized round. The harness awaits `Promise.all` for all clients before starting the next round, so operations are concurrent within a round and the same iteration policy is used across transports. Five synchronized warm-up rounds are outside measurement; forty rounds are timed. The timer around each operation uses `performance.now()` and includes request send, server work, transport delivery, and client parsing/decoding. Aggregate throughput uses the wall-clock duration for all measured rounds and counts every client operation.
+
+All paths use the same 256-byte payload, fixed in-memory server work, and 10 values/events for streaming. The server runs in the same Node process on `127.0.0.1`; setup and connection handshakes are outside the timed region. Errors are caught per operation and reported rather than dropped. Memory is not reported because no reproducible memory protocol was added.
+
+## Recorded environment and exact output
+
+Recorded 2026-08-10 09:09 UTC on Node.js v22.23.2, Linux x64, loopback. This is the second run; the benchmark was run twice and run 2 was selected because both completed without errors and its results were the later captured run. Exact command:
 
 ```sh
-pnpm benchmark
+pnpm benchmark:multi > /tmp/bxios-multi-run-2.json
 ```
 
-The script prints JSON so results can be captured without an extra parser. It requires the repository's existing Node/pnpm dependencies and does not add production dependencies.
+The command's build prefix is included in the capture; the JSON result was:
 
-## Methodology
+```json
+{
+  "environment": { "node": "v22.23.2", "platform": "linux", "arch": "x64" },
+  "config": { "client_counts": [1, 10, 100], "warmup": 5, "iterations": 40, "chunks": 10, "payload_bytes": 256, "clock": "performance.now() (Node monotonic clock)", "synchronization": "Promise.all per round", "client_definition": "one independently warmed persistent HTTP agent or WebSocket connection per client" }
+}
+```
 
-| Setting | Value |
-| --- | --- |
-| Runtime | Node.js v22.23.2, Linux x64 (the recorded run environment) |
-| Host | loopback only: `127.0.0.1`; no TLS, proxy, WAN, disk, or database |
-| Clock | `performance.now()` (`node:perf_hooks` monotonic clock) around each complete client operation |
-| Warm-up | 30 sequential operations per path before samples |
-| Samples | 300 sequential operations per path; concurrency 1 |
-| Unary payload | same request fields and fixed 256-byte string; same `{ ok, value, payload }` response |
-| Streaming payload | same 256-byte string in each of 10 chunks/events; same indexes and values |
-| Server work | fixed in-memory response; streaming loops exactly 10 generated values/events |
-| Reported | median, p95, arithmetic mean, and completed operations per second |
+Full raw result table from that JSON:
 
-The unary timer includes request send, server decode/encode or JSON handling, transport delivery, and client decode/parse. The streaming timer includes opening the request and receiving all 10 values/events. Setup is intentionally outside the timed region: both comparisons reuse a warmed connection. This isolates request/stream operation behavior; it does **not** measure initial WebSocket handshake or HTTP connection establishment.
+| Transport | Clients | Median (ms) | p95 (ms) | p99 (ms) | Throughput (ops/s) | Errors | Operations |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| regular_http_json | 1 | 0.355 | 0.574 | 0.632 | 2,636.212 | 0 | 40 |
+| bxios_msgpack_websocket | 1 | 0.365 | 0.708 | 1.669 | 2,391.751 | 0 | 40 |
+| regular_http_sse | 1 | 0.537 | 0.735 | 0.835 | 1,796.831 | 0 | 40 |
+| bxios_multiplexed_msgpack_websocket | 1 | 1.025 | 3.619 | 4.381 | 714.003 | 0 | 40 |
+| regular_http_json | 10 | 2.012 | 2.858 | 4.501 | 4,175.845 | 0 | 400 |
+| bxios_msgpack_websocket | 10 | 1.142 | 1.990 | 3.384 | 7,127.629 | 0 | 400 |
+| regular_http_sse | 10 | 2.290 | 3.392 | 4.118 | 3,519.641 | 0 | 400 |
+| bxios_multiplexed_msgpack_websocket | 10 | 4.062 | 9.650 | 11.101 | 1,794.949 | 0 | 400 |
+| regular_http_json | 100 | 11.508 | 16.087 | 23.867 | 7,225.875 | 0 | 4,000 |
+| bxios_msgpack_websocket | 100 | 8.873 | 11.266 | 12.134 | 9,997.256 | 0 | 4,000 |
+| regular_http_sse | 100 | 14.543 | 18.303 | 19.732 | 5,838.787 | 0 | 4,000 |
+| bxios_multiplexed_msgpack_websocket | 100 | 31.732 | 40.113 | 43.138 | 2,710.657 | 0 | 4,000 |
 
-For size context, the run measured a 300-byte JSON unary response, a 330-byte representative bxios unary request frame, a 288-byte SSE event, and a 295-byte representative bxios stream-chunk frame. These are wire payload examples, not a full protocol-overhead accounting.
+## Interpretation
 
-## Recorded results
+In this run, unary bxios was slightly slower at one client but had lower median/p95 and higher aggregate throughput at 10 and 100 clients. The regular SSE path had lower latency and higher throughput than bxios multiplexed streaming at every tested count, with the gap widening at 100 clients. Latency rose as synchronized client count increased, while aggregate throughput rose because more operations were in flight. This describes this harness and host—not a universal “10x” result.
 
-Results from `pnpm benchmark` on the environment above:
+## Limitations and architecture context
 
-| Path | Median (ms) | p95 (ms) | Mean (ms) | Throughput (ops/s) |
-| --- | ---: | ---: | ---: | ---: |
-| Regular HTTP JSON unary | 1.822 | 2.209 | 1.791 | 558.20 |
-| bxios MessagePack/WebSocket unary | 0.127 | 0.248 | 0.155 | 6,463.19 |
-| Regular HTTP SSE stream (10 events) | 1.727 | 2.148 | 1.745 | 572.99 |
-| bxios multiplexed MessagePack/WebSocket stream (10 chunks) | 0.508 | 1.048 | 0.646 | 1,549.15 |
+- **Loopback only:** both servers and clients run on one local machine, with no WAN, TLS, proxy, disk, database, authentication, compression, or application middleware.
+- **Warm connections:** connection setup and WebSocket handshakes are excluded. HTTP pooling, HTTP/2, or HTTP/3 could change the regular API baseline substantially; this harness intentionally uses independent HTTP/1.1 keep-alive agents.
+- **Node runtime and local CPU:** results are from Node.js v22.23.2 on one Linux x64 host. Scheduling, GC, CPU frequency, kernel networking, and the `ws` implementation affect the numbers.
+- **Not a production load test:** 100 clients and 4,000 operations per row are a bounded development workload, not capacity, saturation, resilience, or long-duration soak evidence.
+- **Streaming semantics:** each operation emits 10 immediately generated values/events and has one active stream per client. It does not model delayed producers, slow consumers, cancellation-heavy workloads, or realistic backpressure.
+- **TCP head-of-line:** a single TCP connection can experience ordered delivery and head-of-line effects. The matrix uses one connection per client, so it does not answer whether many logical streams on fewer connections are preferable.
+- **Per-connection memory:** independent connections have handshake state, buffers, timers, and socket overhead. Memory was not measured reproducibly here, so no memory conclusion is claimed.
+- **Server scheduling/backpressure:** all work is in one Node event loop and the server emits small responses immediately. Real scheduling, queues, backpressure, and proxy buffering may dominate elsewhere.
+- **Payload and implementation:** the fixed 256-byte payload and low-level endpoint are deliberately simple. MessagePack/JSON size and CPU trade-offs vary with schemas and data.
+- **One benchmark cannot settle architecture:** transport choice also depends on deployment topology, observability, retries, browser/platform support, operational familiarity, HTTP caching, intermediaries, protocol evolution, and workload shape. Use workload-specific tests before making an architecture decision.
 
-In this run, the warmed bxios path had lower request-operation latency and higher loopback throughput for both workloads. The result is specific to this implementation, payload, Node runtime, sequential concurrency, and local machine. It should not be generalized to WAN latency, TLS, proxies, browser stacks, large payloads, high concurrency, or workloads where HTTP infrastructure is already optimized.
-
-## Interpretation and limitations
-
-- Connection reuse matters. This run excludes initial setup for both protocols. A request that must open a WebSocket, or a deployment that already has a pooled HTTP/2/HTTP/3 connection, can produce a different comparison.
-- This is a transport/client-path microbenchmark. It does not compare a production HTTP framework, compression, authentication, TLS, routing middleware, browser behavior, or a real application workload.
-- The SSE endpoint writes all events immediately. It verifies complete event delivery and parsing, but does not model producer delays or backpressure in a remote deployment.
-- The bxios stream exercises multiplexed framing and the real `MultiplexedStreamingEngine`, but only one concurrent stream is timed. Multiplexing benefits should be measured separately with a workload that shares a connection across concurrent stream IDs.
-- MessagePack and JSON sizes depend on schema and data. The fixed payload intentionally makes the two paths comparable; it is not representative of every API response.
-- Re-run the command on the target hardware and record the emitted environment/results before using the numbers for a decision.
+The detailed harness output is intentionally JSON so it can be captured, diffed, and re-run without an extra parser.
